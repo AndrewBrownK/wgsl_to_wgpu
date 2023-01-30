@@ -230,9 +230,18 @@ fn vertex_input_structs(module: &naga::Module) -> Vec<TokenStream> {
 
         // The vertex input structs should already be written at this point.
         // TODO: Support vertex inputs that aren't in a struct.
+        // TODO wgpu::VertexBufferLayout
         quote! {
             impl super::#name {
                 pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; #count] = wgpu::vertex_attr_array![#(#attributes),*];
+
+                pub fn desc(step_mode: wgpu::VertexStepMode) -> wgpu::VertexBufferLayout<'static> {
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+                        step_mode,
+                        attributes: &Self::VERTEX_ATTRIBUTES
+                    }
+                }
             }
         }
     }).collect()
@@ -243,18 +252,28 @@ fn bind_groups_module(
     bind_group_data: &BTreeMap<u32, wgsl::GroupData>,
     shader_stages: wgpu::ShaderStages,
 ) -> TokenStream {
+    // TODO add some kind of trait like "BufferBindingProvider" or something that clients
+    //  can implement to more straightforwardly provide these BindGroups
+
     let bind_groups: Vec<_> = bind_group_data
         .iter()
         .map(|(group_no, group)| {
             let group_name = indexed_name_to_ident("BindGroup", *group_no);
 
+            // TODO see info about the group in "group", like even though bind groups
+            //  are named awkwardly as BindGroup0, 1 etc, their layouts have sensible properties
+            //  in them like "camera" or "light".
             let layout = bind_group_layout(*group_no, group);
+
+            // let the_trait = bind_group_trait(*group_no, group);
+
             let layout_descriptor = bind_group_layout_descriptor(*group_no, group, shader_stages);
             let group_impl = bind_group(*group_no, group, shader_stages);
 
             quote! {
                 pub struct #group_name(wgpu::BindGroup);
                 #layout
+                // #the_trait
                 #layout_descriptor
                 #group_impl
             }
@@ -382,7 +401,30 @@ fn struct_members(
         .collect()
 }
 
+fn bind_group_trait(group_no: u32, group: &wgsl::GroupData) -> TokenStream {
+    let methods: Vec<TokenStream> = group.bindings.iter().map(|binding| {
+        let field_name = Ident::new(binding.name.as_ref().unwrap(), Span::call_site());
+        match binding.binding_type.inner {
+            naga::TypeInner::Struct { .. } => quote!(fn #field_name(&self) -> wgpu::BufferBinding),
+            naga::TypeInner::Image { .. } => quote!(fn #field_name(&self) -> &wgpu::TextureView),
+            naga::TypeInner::Sampler { .. } => quote!(fn #field_name(&self) -> &wgpu::Sampler),
+            naga::TypeInner::Array { .. } => quote!(fn #field_name(&self) -> wgpu::BufferBinding),
+            _ => panic!("Unsupported type for binding fields."),
+        }
+    }).collect();
+
+    let name = indexed_name_to_ident("ProvideBindGroup", group_no);
+    quote! {
+        pub trait #name {
+            #(#methods),*
+        }
+    }
+}
+
 fn bind_group_layout(group_no: u32, group: &wgsl::GroupData) -> TokenStream {
+    // TODO this proves a BindGroupLayout could have multiple fields (maybe),
+    //  so you can't just rename the whole thing nicer. Only the fields can be nice. Allegedly.
+    //  Okay yeah actually. That sucks.
     let fields: Vec<_> = group
         .bindings
         .iter()
