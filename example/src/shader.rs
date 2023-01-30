@@ -6,6 +6,10 @@ pub mod bind_groups {
         pub color_texture: &'a wgpu::TextureView,
         pub color_sampler: &'a wgpu::Sampler,
     }
+    pub trait ProvideBindGroup0 {
+        fn color_texture(&self) -> &wgpu::TextureView;
+        fn color_sampler(&self) -> &wgpu::Sampler;
+    }
     const LAYOUT_DESCRIPTOR0: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: None,
         entries: &[
@@ -62,14 +66,16 @@ pub mod bind_groups {
             render_pass.set_bind_group(0, &self.0, &[]);
         }
     }
-    pub struct BindGroups<'a> {
-        pub bind_group0: &'a BindGroup0,
+    pub struct BindGroups {
+        pub bind_group0: BindGroup0,
     }
-    pub fn set_bind_groups<'a>(
-        pass: &mut wgpu::RenderPass<'a>,
-        bind_groups: BindGroups<'a>,
-    ) {
-        bind_groups.bind_group0.set(pass);
+    impl BindGroups {
+        pub fn set<'s, 'a>(&'s self, pass: &mut wgpu::RenderPass<'a>)
+        where
+            's: 'a,
+        {
+            self.bind_group0.set(pass);
+        }
     }
 }
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {

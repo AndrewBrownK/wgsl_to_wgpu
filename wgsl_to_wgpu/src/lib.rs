@@ -265,7 +265,7 @@ fn bind_groups_module(
             //  in them like "camera" or "light".
             let layout = bind_group_layout(*group_no, group);
 
-            // let the_trait = bind_group_trait(*group_no, group);
+            let the_trait = bind_group_trait(*group_no, group);
 
             let layout_descriptor = bind_group_layout_descriptor(*group_no, group, shader_stages);
             let group_impl = bind_group(*group_no, group, shader_stages);
@@ -273,7 +273,7 @@ fn bind_groups_module(
             quote! {
                 pub struct #group_name(wgpu::BindGroup);
                 #layout
-                // #the_trait
+                #the_trait
                 #layout_descriptor
                 #group_impl
             }
@@ -285,7 +285,7 @@ fn bind_groups_module(
         .map(|group_no| {
             let group_name = indexed_name_to_ident("BindGroup", *group_no);
             let field = indexed_name_to_ident("bind_group", *group_no);
-            quote!(pub #field: &'a #group_name)
+            quote!(pub #field: #group_name)
         })
         .collect();
 
@@ -301,7 +301,7 @@ fn bind_groups_module(
             pub mod bind_groups {
                 #(#bind_groups)*
 
-                pub struct BindGroups<'a> {
+                pub struct BindGroups {
                     #(#bind_group_fields),*
                 }
 
@@ -326,16 +326,15 @@ fn set_bind_groups(
         .keys()
         .map(|group_no| {
             let group = indexed_name_to_ident("bind_group", *group_no);
-            quote!(bind_groups.#group.set(pass);)
+            quote!(self.#group.set(pass);)
         })
         .collect();
 
     quote! {
-        pub fn set_bind_groups<'a>(
-            pass: &mut #render_pass,
-            bind_groups: BindGroups<'a>,
-        ) {
-            #(#groups)*
+        impl BindGroups {
+            pub fn set<'s, 'a>(&'s self, pass: &mut #render_pass) where 's: 'a {
+                #(#groups)*
+            }
         }
     }
 }
@@ -405,10 +404,10 @@ fn bind_group_trait(group_no: u32, group: &wgsl::GroupData) -> TokenStream {
     let methods: Vec<TokenStream> = group.bindings.iter().map(|binding| {
         let field_name = Ident::new(binding.name.as_ref().unwrap(), Span::call_site());
         match binding.binding_type.inner {
-            naga::TypeInner::Struct { .. } => quote!(fn #field_name(&self) -> wgpu::BufferBinding),
-            naga::TypeInner::Image { .. } => quote!(fn #field_name(&self) -> &wgpu::TextureView),
-            naga::TypeInner::Sampler { .. } => quote!(fn #field_name(&self) -> &wgpu::Sampler),
-            naga::TypeInner::Array { .. } => quote!(fn #field_name(&self) -> wgpu::BufferBinding),
+            naga::TypeInner::Struct { .. } => quote!(fn #field_name(&self) -> wgpu::BufferBinding;),
+            naga::TypeInner::Image { .. } => quote!(fn #field_name(&self) -> &wgpu::TextureView;),
+            naga::TypeInner::Sampler { .. } => quote!(fn #field_name(&self) -> &wgpu::Sampler;),
+            naga::TypeInner::Array { .. } => quote!(fn #field_name(&self) -> wgpu::BufferBinding;),
             _ => panic!("Unsupported type for binding fields."),
         }
     }).collect();
@@ -416,7 +415,7 @@ fn bind_group_trait(group_no: u32, group: &wgsl::GroupData) -> TokenStream {
     let name = indexed_name_to_ident("ProvideBindGroup", group_no);
     quote! {
         pub trait #name {
-            #(#methods),*
+            #(#methods)*
         }
     }
 }
