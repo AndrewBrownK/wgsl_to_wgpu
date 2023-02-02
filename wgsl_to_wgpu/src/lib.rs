@@ -17,7 +17,7 @@
 extern crate wgpu_types as wgpu;
 
 use convert_case::{Case, Casing};
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::{Literal, Span, TokenStream};
 use quote::quote;
 use std::collections::BTreeMap;
 use syn::{Ident, Index};
@@ -207,9 +207,25 @@ fn vertex_module(module: &naga::Module) -> TokenStream {
         // Don't include empty modules.
         quote!()
     } else {
+        let vertex_inputs = wgsl::get_vertex_input_structs(module);
+        let n = Literal::usize_unsuffixed(vertex_inputs.len());
+        let layouts: Vec<TokenStream> = vertex_inputs.iter().map(|s| {
+            let name = &s.name;
+            let mode = if name.to_lowercase().contains("instance") {
+                quote!(wgpu::VertexStepMode::Instance)
+            } else {
+                quote!(wgpu::VertexStepMode::Vertex)
+            };
+            let name = Ident::new(&s.name, Span::call_site());
+            quote!(super::#name::desc(#mode))
+        }).collect();
         quote! {
             pub mod vertex {
                 #(#structs)*
+
+                pub const INFERRED_BUFFER_LAYOUTS: [wgpu::VertexBufferLayout<'static>; #n] = [
+                    #(#layouts),*
+                ];
             }
         }
     }
@@ -241,7 +257,7 @@ fn vertex_input_structs(module: &naga::Module) -> Vec<TokenStream> {
             impl super::#name {
                 pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; #count] = wgpu::vertex_attr_array![#(#attributes),*];
 
-                pub fn desc(step_mode: wgpu::VertexStepMode) -> wgpu::VertexBufferLayout<'static> {
+                pub const fn desc(step_mode: wgpu::VertexStepMode) -> wgpu::VertexBufferLayout<'static> {
                     wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
                         step_mode,
