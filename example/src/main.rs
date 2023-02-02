@@ -187,7 +187,7 @@ impl State {
         render_pass.set_pipeline(&self.pipeline);
 
         // Use this function to ensure all bind groups are set.
-        self.bind_groups.set(&mut render_pass);
+        self.bind_groups.bind_group0.set(&mut render_pass);
 
         render_pass.draw(0..3, 0..1);
 

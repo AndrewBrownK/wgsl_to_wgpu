@@ -16,11 +16,13 @@
 
 extern crate wgpu_types as wgpu;
 
+use convert_case::{Case, Casing};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use std::collections::BTreeMap;
 use syn::{Ident, Index};
 use thiserror::Error;
+use crate::wgsl::get_bind_group_data;
 
 mod wgsl;
 
@@ -139,8 +141,12 @@ pub fn create_shader_module(
         }
     };
 
+    let draw_traits = draw_fns(&bind_group_data, &module);
+
     let output = quote! {
         #(#structs)*
+
+        #draw_traits
 
         #bind_groups_module
 
@@ -315,6 +321,8 @@ fn set_bind_groups(
     bind_group_data: &BTreeMap<u32, wgsl::GroupData>,
     is_compute: bool,
 ) -> TokenStream {
+    return quote!();
+
     let render_pass = if is_compute {
         quote!(wgpu::ComputePass<'a>)
     } else {
@@ -329,8 +337,22 @@ fn set_bind_groups(
             quote!(self.#group.set(pass);)
         })
         .collect();
+    // The set function for each bind group already sets the index.
+    let groups2: Vec<_> = bind_group_data
+        .keys()
+        .map(|group_no| {
+            let group = indexed_name_to_ident("bind_group", *group_no);
+            quote!(bind_groups.#group.set(pass);)
+        })
+        .collect();
 
     quote! {
+        pub fn set_bind_groups<'a>(
+            pass: &mut #render_pass,
+            bind_groups: &BindGroups,
+        ) {
+            #(#groups2)*
+        }
         impl BindGroups {
             pub fn set<'s, 'a>(&'s self, pass: &mut #render_pass) where 's: 'a {
                 #(#groups)*
@@ -416,6 +438,86 @@ fn bind_group_trait(group_no: u32, group: &wgsl::GroupData) -> TokenStream {
     quote! {
         pub trait #name {
             #(#methods)*
+        }
+    }
+}
+
+//TODO fns to create render pipeline
+
+fn draw_fns(
+    bind_group_data: &BTreeMap<u32, wgsl::GroupData>,
+    module: &naga::Module
+) -> TokenStream {
+
+    let vertex_inputs = wgsl::get_vertex_input_structs(module);
+    let mut idx = 0;
+    let vertex_buffer_methods: Vec<TokenStream> = vertex_inputs.iter().map(|vertex_input| {
+        let n = vertex_input.name.clone().to_case(Case::Snake);
+        let by_slot = indexed_name_to_ident("get_vertex_buffer", idx);
+        let by_type = Ident::new(&format!("get_{}_buffer", n), Span::call_site());
+        let q = quote! {
+            fn #by_slot(&'d self, idx: &Self::Index) -> wgpu::BufferSlice {
+                return self.#by_type(idx);
+            }
+            fn #by_type(&'d self, idx: &Self::Index) -> wgpu::BufferSlice;
+        };
+        idx = idx+1;
+        q
+    }).collect();
+
+    let mut idx = 0;
+    let vertex_buffer_uses: Vec<TokenStream> = vertex_inputs.iter().map(|vertex_input| {
+        let slot = idx;
+        let by_slot = indexed_name_to_ident("get_vertex_buffer", idx);
+        let q = quote! {
+            render_pass.set_vertex_buffer(#slot, d.#by_slot(idx));
+        };
+        idx = idx+1;
+        q
+    }).collect();
+
+    let bind_group_methods: Vec<TokenStream> = bind_group_data.iter().map(|(group_no, group_data)| {
+        let group_name = indexed_name_to_ident("BindGroup", *group_no);
+        let method_name = indexed_name_to_ident("get_bind_group", *group_no);
+        quote! {
+            fn #method_name(&'d self, idx: &Self::Index) -> &bind_groups::#group_name;
+        }
+    }).collect();
+
+    let bind_group_uses: Vec<TokenStream> = bind_group_data.iter().map(|(group_no, group_data)| {
+        let method_name = indexed_name_to_ident("get_bind_group", *group_no);
+        quote! {
+            d.#method_name(idx).set(render_pass);
+        }
+    }).collect();
+
+    quote! {
+        pub trait Drawable<'d> {
+            type Index;
+            fn get_stuff(&'d self) -> Vec<Self::Index>;
+            fn indices(&'d self, idx: &Self::Index) -> core::ops::Range<u32> {
+                // Default impl assumes rendering 1 thing
+                return 0..1;
+            }
+            fn base_vertex(&'d self, idx: &Self::Index) -> i32 {
+                return 0;
+            }
+            fn instances(&'d self, idx: &Self::Index) -> core::ops::Range<u32> {
+                // Default impl assumes rendering 1 thing
+                return 0..1;
+            }
+            fn get_index_buffer(&'d self, idx: &Self::Index) -> (wgpu::BufferSlice, wgpu::IndexFormat);
+            #(#vertex_buffer_methods)*
+            #(#bind_group_methods)*
+        }
+        pub fn draw<'rp, 'd: 'rp, D: Drawable<'d>>(d: &'d D, render_pass: &mut wgpu::RenderPass<'rp>) {
+            for idx in d.get_stuff().iter() {
+                let (idx_buffer, idx_fmt) = d.get_index_buffer(idx);
+                render_pass.set_index_buffer(idx_buffer, idx_fmt);
+                #(#vertex_buffer_uses)*
+                #(#bind_group_uses)*
+                render_pass.draw_indexed(d.indices(idx), d.base_vertex(idx), d.instances(idx));
+            }
         }
     }
 }
