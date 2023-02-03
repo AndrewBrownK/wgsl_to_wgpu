@@ -20,6 +20,8 @@ use convert_case::{Case, Casing};
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::quote;
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
+use naga::ShaderStage;
 use syn::{Ident, Index};
 use thiserror::Error;
 use crate::wgsl::get_bind_group_data;
@@ -142,9 +144,12 @@ pub fn create_shader_module(
     };
 
     let draw_traits = draw_fns(&bind_group_data, &module);
+    let pipeline_fns = pipeline_fns(&module);
 
     let output = quote! {
         #(#structs)*
+
+        #pipeline_fns
 
         #draw_traits
 
@@ -458,7 +463,75 @@ fn bind_group_trait(group_no: u32, group: &wgsl::GroupData) -> TokenStream {
     }
 }
 
-//TODO fns to create render pipeline
+fn pipeline_fns(module: &naga::Module) -> TokenStream {
+    if wgsl::get_vertex_input_structs(module).is_empty() {
+        return quote!()
+    }
+
+    let vertex_state: TokenStream = module.entry_points.iter().find_map(|entry_point| {
+        let entry_name = Literal::string(&entry_point.name);
+        match &entry_point.stage {
+            ShaderStage::Fragment => None,
+            ShaderStage::Compute => None,
+            ShaderStage::Vertex => Some(quote! {
+                wgpu::VertexState {
+                    module: &shader_module,
+                    entry_point: #entry_name,
+                    buffers: &vertex_layouts
+                }
+            }),
+        }
+    }).expect("The module must have a vertex entry point");
+
+    let fragment_state: TokenStream = module.entry_points.iter().find_map(|entry_point| {
+        let entry_name = Literal::string(&entry_point.name);
+        match &entry_point.stage {
+            ShaderStage::Vertex => None,
+            ShaderStage::Compute => None,
+            ShaderStage::Fragment => Some(quote! {
+                wgpu::FragmentState {
+                    module: &shader_module,
+                    entry_point: #entry_name,
+                    targets: &partial_descriptor.fragment_targets
+                }
+            }),
+        }
+    }).map(|ts| quote!(Some(#ts))).unwrap_or_else(|| quote!(None));
+
+    quote! {
+
+        pub fn create_render_pipeline(
+            device: &wgpu::Device,
+            partial_descriptor: wgsl_to_wgpu::PartialRenderPipelineDescriptor
+        ) -> wgpu::RenderPipeline {
+            let shader_module = create_shader_module(&device);
+            let vertex_layouts = vertex::INFERRED_BUFFER_LAYOUTS;
+            let pipeline_layout = create_pipeline_layout(device);
+            return device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: partial_descriptor.label,
+                depth_stencil: partial_descriptor.depth_stencil,
+                multiview: partial_descriptor.multiview,
+                primitive: partial_descriptor.primitive,
+                multisample: partial_descriptor.multisample,
+                layout: Some(&pipeline_layout),
+                vertex: #vertex_state,
+                fragment: #fragment_state,
+            });
+        }
+    }
+}
+
+
+pub struct PartialRenderPipelineDescriptor {
+    pub label: Option<&'static str>,
+    pub depth_stencil: Option<wgpu::DepthStencilState>,
+    pub multiview: Option<NonZeroU32>,
+    pub fragment_targets: Vec<Option<wgpu::ColorTargetState>>,
+    pub primitive: wgpu::PrimitiveState,
+    pub multisample: wgpu::MultisampleState
+}
+
+
 
 fn draw_fns(
     bind_group_data: &BTreeMap<u32, wgsl::GroupData>,
@@ -511,28 +584,24 @@ fn draw_fns(
         pub trait Drawable<'d> {
             type Index;
             fn get_stuff(&'d self) -> Vec<Self::Index>;
-            fn indices(&'d self, idx: &Self::Index) -> core::ops::Range<u32> {
-                // Default impl assumes rendering 1 thing
-                return 0..1;
-            }
             fn base_vertex(&'d self, idx: &Self::Index) -> i32 {
                 return 0;
             }
-            fn instances(&'d self, idx: &Self::Index) -> core::ops::Range<u32> {
+            fn instance_range(&'d self, idx: &Self::Index) -> core::ops::Range<u32> {
                 // Default impl assumes rendering 1 thing
                 return 0..1;
             }
-            fn get_index_buffer(&'d self, idx: &Self::Index) -> (wgpu::BufferSlice, wgpu::IndexFormat);
+            fn get_index_buffer(&'d self, idx: &Self::Index) -> (wgpu::BufferSlice, wgpu::IndexFormat, core::ops::Range<u32>);
             #(#vertex_buffer_methods)*
             #(#bind_group_methods)*
         }
         pub fn draw<'rp, 'd: 'rp, D: Drawable<'d>>(d: &'d D, render_pass: &mut wgpu::RenderPass<'rp>) {
             for idx in d.get_stuff().iter() {
-                let (idx_buffer, idx_fmt) = d.get_index_buffer(idx);
+                let (idx_buffer, idx_fmt, idx_range) = d.get_index_buffer(idx);
                 render_pass.set_index_buffer(idx_buffer, idx_fmt);
                 #(#vertex_buffer_uses)*
                 #(#bind_group_uses)*
-                render_pass.draw_indexed(d.indices(idx), d.base_vertex(idx), d.instances(idx));
+                render_pass.draw_indexed(idx_range, d.base_vertex(idx), d.instance_range(idx));
             }
         }
     }

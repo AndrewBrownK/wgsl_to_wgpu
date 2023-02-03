@@ -3,19 +3,16 @@
 pub trait Drawable<'d> {
     type Index;
     fn get_stuff(&'d self) -> Vec<Self::Index>;
-    fn indices(&'d self, idx: &Self::Index) -> core::ops::Range<u32> {
-        return 0..1;
-    }
     fn base_vertex(&'d self, idx: &Self::Index) -> i32 {
         return 0;
     }
-    fn instances(&'d self, idx: &Self::Index) -> core::ops::Range<u32> {
+    fn instance_range(&'d self, idx: &Self::Index) -> core::ops::Range<u32> {
         return 0..1;
     }
     fn get_index_buffer(
         &'d self,
         idx: &Self::Index,
-    ) -> (wgpu::BufferSlice, wgpu::IndexFormat);
+    ) -> (wgpu::BufferSlice, wgpu::IndexFormat, core::ops::Range<u32>);
     fn get_bind_group0(&'d self, idx: &Self::Index) -> &bind_groups::BindGroup0;
 }
 pub fn draw<'rp, 'd: 'rp, D: Drawable<'d>>(
@@ -23,10 +20,10 @@ pub fn draw<'rp, 'd: 'rp, D: Drawable<'d>>(
     render_pass: &mut wgpu::RenderPass<'rp>,
 ) {
     for idx in d.get_stuff().iter() {
-        let (idx_buffer, idx_fmt) = d.get_index_buffer(idx);
+        let (idx_buffer, idx_fmt, idx_range) = d.get_index_buffer(idx);
         render_pass.set_index_buffer(idx_buffer, idx_fmt);
         d.get_bind_group0(idx).set(render_pass);
-        render_pass.draw_indexed(d.indices(idx), d.base_vertex(idx), d.instances(idx));
+        render_pass.draw_indexed(idx_range, d.base_vertex(idx), d.instance_range(idx));
     }
 }
 pub mod bind_groups {
