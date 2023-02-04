@@ -545,10 +545,10 @@ fn draw_fns(
         let by_slot = indexed_name_to_ident("get_vertex_buffer", idx);
         let by_type = Ident::new(&format!("get_{}_buffer", n), Span::call_site());
         let q = quote! {
-            fn #by_slot(&'d self, idx: &Self::Index) -> wgpu::BufferSlice {
-                return self.#by_type(idx);
+            fn #by_slot(&self) -> wgpu::BufferSlice<'d> {
+                return self.#by_type();
             }
-            fn #by_type(&'d self, idx: &Self::Index) -> wgpu::BufferSlice;
+            fn #by_type(&self) -> wgpu::BufferSlice<'d>;
         };
         idx = idx+1;
         q
@@ -559,7 +559,7 @@ fn draw_fns(
         let slot = idx;
         let by_slot = indexed_name_to_ident("get_vertex_buffer", idx);
         let q = quote! {
-            render_pass.set_vertex_buffer(#slot, d.#by_slot(idx));
+            render_pass.set_vertex_buffer(#slot, d.#by_slot());
         };
         idx = idx+1;
         q
@@ -569,40 +569,36 @@ fn draw_fns(
         let group_name = indexed_name_to_ident("BindGroup", *group_no);
         let method_name = indexed_name_to_ident("get_bind_group", *group_no);
         quote! {
-            fn #method_name(&'d self, idx: &Self::Index) -> &bind_groups::#group_name;
+            fn #method_name(&self) -> &'d bind_groups::#group_name;
         }
     }).collect();
 
     let bind_group_uses: Vec<TokenStream> = bind_group_data.iter().map(|(group_no, group_data)| {
         let method_name = indexed_name_to_ident("get_bind_group", *group_no);
         quote! {
-            d.#method_name(idx).set(render_pass);
+            d.#method_name().set(render_pass);
         }
     }).collect();
 
     quote! {
         pub trait Drawable<'d> {
-            type Index;
-            fn get_stuff(&'d self) -> Vec<Self::Index>;
-            fn base_vertex(&'d self, idx: &Self::Index) -> i32 {
+            fn base_vertex(&self) -> i32 {
                 return 0;
             }
-            fn instance_range(&'d self, idx: &Self::Index) -> core::ops::Range<u32> {
+            fn instance_range(&self) -> core::ops::Range<u32> {
                 // Default impl assumes rendering 1 thing
                 return 0..1;
             }
-            fn get_index_buffer(&'d self, idx: &Self::Index) -> (wgpu::BufferSlice, wgpu::IndexFormat, core::ops::Range<u32>);
+            fn get_index_buffer(&self) -> (wgpu::BufferSlice<'d>, wgpu::IndexFormat, core::ops::Range<u32>);
             #(#vertex_buffer_methods)*
             #(#bind_group_methods)*
         }
-        pub fn draw<'rp, 'd: 'rp, D: Drawable<'d>>(d: &'d D, render_pass: &mut wgpu::RenderPass<'rp>) {
-            for idx in d.get_stuff().iter() {
-                let (idx_buffer, idx_fmt, idx_range) = d.get_index_buffer(idx);
-                render_pass.set_index_buffer(idx_buffer, idx_fmt);
-                #(#vertex_buffer_uses)*
-                #(#bind_group_uses)*
-                render_pass.draw_indexed(idx_range, d.base_vertex(idx), d.instance_range(idx));
-            }
+        pub fn draw<'rp, 'd: 'rp, D: Drawable<'d>>(d: D, render_pass: &mut wgpu::RenderPass<'rp>) {
+            let (idx_buffer, idx_fmt, idx_range) = d.get_index_buffer();
+            render_pass.set_index_buffer(idx_buffer, idx_fmt);
+            #(#vertex_buffer_uses)*
+            #(#bind_group_uses)*
+            render_pass.draw_indexed(idx_range, d.base_vertex(), d.instance_range());
         }
     }
 }
